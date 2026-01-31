@@ -1,0 +1,25 @@
+# Standalone docker-compose for constant_contact service
+# This can be used for local development/testing
+# The main christenson_server_host/docker-compose.yml will use this service
+
+services:
+  constant_contact:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: constant-contact-api
+    ports:
+      - "${PORT:-4567}:4567"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    environment:
+      - PORT=4567
+    networks:
+      - constant_contact_network
+    restart: unless-stopped
+
+networks:
+  constant_contact_network:
+    driver: bridge
