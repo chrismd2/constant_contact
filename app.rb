@@ -375,6 +375,7 @@ class ConstantContactApp < Sinatra::Base
     set :port, ENV.fetch('PORT', 4567).to_i
     set :bind, '0.0.0.0'
     enable :logging
+    set :public_folder, File.join(File.dirname(__FILE__), 'public')
   end
 
   # Class variable to track if we've logged token status
@@ -398,9 +399,27 @@ class ConstantContactApp < Sinatra::Base
       @@token_status_logged = true
     end
     
-    # Skip OAuth endpoints from token validation
-    if request.path.start_with?('/oauth/')
+    # Skip OAuth endpoints, frontend pages, and static files from token validation
+    if request.path.start_with?('/oauth/') || 
+       request.path == '/' || 
+       request.path == '/contacts/new' ||
+       request.path.start_with?('/js/') ||
+       request.path.start_with?('/css/') ||
+       request.path.start_with?('/health')
       return
+    end
+    
+    # For /contacts, check if it's an HTML request (frontend) or JSON (API)
+    if request.path == '/contacts'
+      accept_header = request.env['HTTP_ACCEPT'].to_s.downcase
+      query_string = request.env['QUERY_STRING'].to_s
+      # If Accept header explicitly includes application/json or has query params, treat as API
+      has_query_params = !query_string.nil? && !query_string.empty?
+      wants_json = accept_header.include?('application/json') || has_query_params
+      unless wants_json
+        # HTML request - skip authentication
+        return
+      end
     end
     
     content_type :json
@@ -725,6 +744,34 @@ class ConstantContactApp < Sinatra::Base
       logger.error "[Token] Error details: #{result[:error].inspect}"
       nil
     end
+  end
+
+  # Frontend Routes
+  get '/' do
+    send_file File.join(settings.public_folder, 'index.html')
+  end
+
+  get '/contacts' do
+    # Check if request explicitly wants JSON (API) or HTML (browser)
+    accept_header = request.env['HTTP_ACCEPT'].to_s.downcase
+    query_string = request.env['QUERY_STRING'].to_s
+    
+    # If Accept header explicitly includes application/json, treat as API request
+    # Also treat requests with query parameters as API requests (browsers navigate without query params)
+    has_query_params = !query_string.nil? && !query_string.empty?
+    wants_json = accept_header.include?('application/json') || has_query_params
+    
+    if wants_json
+      # API request - continue to API handler below
+      pass
+    else
+      # Browser request - serve HTML page
+      send_file File.join(settings.public_folder, 'contacts.html')
+    end
+  end
+
+  get '/contacts/new' do
+    send_file File.join(settings.public_folder, 'contacts', 'new.html')
   end
 
   # Health check
