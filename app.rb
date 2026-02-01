@@ -403,6 +403,7 @@ class ConstantContactApp < Sinatra::Base
     if request.path.start_with?('/oauth/') || 
        request.path == '/' || 
        request.path == '/contacts/new' ||
+       request.path.match?(%r{^/contacts/[^/]+/edit$}) ||
        request.path.start_with?('/js/') ||
        request.path.start_with?('/css/') ||
        request.path.start_with?('/health')
@@ -462,7 +463,25 @@ class ConstantContactApp < Sinatra::Base
       
       unless access_token
         logger.error "[ERROR] Failed to refresh expired token!"
-        halt 401, json({ error: { message: 'Access token expired and refresh failed. Please re-authorize at /oauth/authorize' } })
+        
+        # If refresh failed due to invalid refresh token, provide authorization URL
+        client_id = ENV['CONSTANT_CONTACT_CLIENT_ID']
+        if client_id
+          redirect_uri = ENV['CONSTANT_CONTACT_REDIRECT_URI'] || "#{request.scheme}://#{request.host_with_port}/oauth/callback"
+          oauth_client = ConstantContactOAuth2.new(client_id, nil, redirect_uri, logger)
+          state = SecureRandom.hex(16)
+          auth_url = oauth_client.authorization_url(state, ['contact_data', 'offline_access'])
+          
+          halt 401, json({ 
+            error: { 
+              message: 'Access token expired and refresh failed. Re-authorization required.',
+              requires_reauth: true,
+              authorization_url: auth_url
+            } 
+          })
+        else
+          halt 401, json({ error: { message: 'Access token expired and refresh failed. Please re-authorize at /oauth/authorize' } })
+        end
       end
     end
     
@@ -503,21 +522,22 @@ class ConstantContactApp < Sinatra::Base
   end
 
   get '/oauth/callback' do
-    content_type :json
     code = params['code']
     state = params['state']
     error = params['error']
     
     if error
       logger.error "[OAuth2] Authorization error: #{error}"
-      status 400
-      return json({ error: { message: "OAuth2 authorization failed: #{error}", error: error } })
+      error_message = "OAuth2 authorization failed: #{error}"
+      redirect "/oauth/error?error=#{URI.encode_www_form_component(error)}&message=#{URI.encode_www_form_component(error_message)}"
+      return
     end
     
     unless code
       logger.error "[OAuth2] No authorization code received"
-      status 400
-      return json({ error: { message: 'No authorization code received' } })
+      error_message = 'No authorization code received'
+      redirect "/oauth/error?message=#{URI.encode_www_form_component(error_message)}"
+      return
     end
     
     client_id = ENV['CONSTANT_CONTACT_CLIENT_ID']
@@ -526,8 +546,9 @@ class ConstantContactApp < Sinatra::Base
     
     unless client_secret
       logger.error "[OAuth2] Client secret required for token exchange"
-      status 500
-      return json({ error: { message: 'Client secret required for token exchange. Set CONSTANT_CONTACT_CLIENT_SECRET' } })
+      error_message = 'Client secret required for token exchange. Set CONSTANT_CONTACT_CLIENT_SECRET'
+      redirect "/oauth/error?message=#{URI.encode_www_form_component(error_message)}"
+      return
     end
     
     oauth_client = ConstantContactOAuth2.new(client_id, client_secret, redirect_uri, logger)
@@ -563,21 +584,13 @@ class ConstantContactApp < Sinatra::Base
         logger.warn "[OAuth2] Failed to update .env file, but tokens are saved in #{TokenStorage::TOKEN_FILE}"
       end
       
-      # Return tokens to client
-      status 200
-      json({
-        message: 'Authorization successful. Tokens have been saved to .tokens.json and updated in your .env file.',
-        access_token: token_data['access_token'],
-        refresh_token: token_data['refresh_token'],
-        expires_in: token_data['expires_in'],
-        token_type: token_data['token_type'],
-        scope: token_data['scope'],
-        env_file_updated: env_file ? true : false
-      })
+      # Redirect to success page
+      redirect '/oauth/success'
     else
       logger.error "[OAuth2] Token exchange failed: #{result[:error].inspect}"
-      status result[:status]
-      json(result[:error])
+      error_body = result[:error] || {}
+      error_message = error_body['error_description'] || error_body['error_message'] || error_body['message'] || 'Token exchange failed'
+      redirect "/oauth/error?message=#{URI.encode_www_form_component(error_message)}"
     end
   end
 
@@ -633,6 +646,34 @@ class ConstantContactApp < Sinatra::Base
       })
     else
       logger.error "[OAuth2] Token refresh failed: #{result[:error].inspect}"
+      
+      # Check if refresh token is invalid/expired - need to re-authorize
+      error_body = result[:error] || {}
+      error_key = error_body['error'] || error_body['error_key']
+      error_message = error_body['error_description'] || error_body['error_message'] || ''
+      
+      if error_key == 'invalid_grant' || error_message.include?('refresh token is invalid') || error_message.include?('refresh token is expired')
+        logger.warn "[OAuth2] Refresh token is invalid/expired, returning authorization URL"
+        
+        # Clear invalid tokens
+        TokenStorage.clear
+        
+        # Return authorization URL for re-authorization
+        redirect_uri = ENV['CONSTANT_CONTACT_REDIRECT_URI'] || "#{request.scheme}://#{request.host_with_port}/oauth/callback"
+        oauth_auth_client = ConstantContactOAuth2.new(client_id, nil, redirect_uri, logger)
+        state = SecureRandom.hex(16)
+        auth_url = oauth_auth_client.authorization_url(state, ['contact_data', 'offline_access'])
+        
+        status 401
+        return json({
+          error: {
+            message: 'Refresh token is invalid or expired. Re-authorization required.',
+            requires_reauth: true,
+            authorization_url: auth_url
+          }
+        })
+      end
+      
       status result[:status]
       json(result[:error])
     end
@@ -742,6 +783,17 @@ class ConstantContactApp < Sinatra::Base
     else
       logger.error "[Token] Token refresh failed with status: #{result[:status]}"
       logger.error "[Token] Error details: #{result[:error].inspect}"
+      
+      # Check if refresh token is invalid/expired
+      error_body = result[:error] || {}
+      error_key = error_body['error'] || error_body['error_key']
+      error_message = error_body['error_description'] || error_body['error_message'] || ''
+      
+      if error_key == 'invalid_grant' || error_message.include?('refresh token is invalid') || error_message.include?('refresh token is expired')
+        logger.warn "[Token] Refresh token is invalid/expired, clearing tokens"
+        TokenStorage.clear
+      end
+      
       nil
     end
   end
@@ -772,6 +824,18 @@ class ConstantContactApp < Sinatra::Base
 
   get '/contacts/new' do
     send_file File.join(settings.public_folder, 'contacts', 'new.html')
+  end
+
+  get '/contacts/:id/edit' do
+    send_file File.join(settings.public_folder, 'contacts', 'edit.html')
+  end
+
+  get '/oauth/success' do
+    send_file File.join(settings.public_folder, 'oauth', 'success.html')
+  end
+
+  get '/oauth/error' do
+    send_file File.join(settings.public_folder, 'oauth', 'error.html')
   end
 
   # Health check

@@ -12,19 +12,86 @@
   const modalClose = document.getElementById('modal-close');
   const modalCloseBtn = document.getElementById('modal-close-btn');
   const modalBackdrop = document.getElementById('modal-backdrop');
+  let currentContactId = null;
 
   // Load contacts on page load
-  document.addEventListener('DOMContentLoaded', loadContacts);
+  document.addEventListener('DOMContentLoaded', function() {
+    loadContacts();
+    setupModalHandlers();
+  });
 
-  // Modal close handlers
-  if (modalClose) {
-    modalClose.addEventListener('click', closeModal);
-  }
-  if (modalCloseBtn) {
-    modalCloseBtn.addEventListener('click', closeModal);
-  }
-  if (modalBackdrop) {
-    modalBackdrop.addEventListener('click', closeModal);
+  function setupModalHandlers() {
+    // Modal close handlers
+    if (modalClose) {
+      modalClose.addEventListener('click', closeModal);
+    }
+    if (modalCloseBtn) {
+      modalCloseBtn.addEventListener('click', closeModal);
+    }
+    if (modalBackdrop) {
+      modalBackdrop.addEventListener('click', closeModal);
+    }
+    
+    // Use event delegation on the modal for edit and delete buttons
+    // This ensures the handlers work even if buttons are recreated
+    const contactModal = document.getElementById('contact-modal');
+    if (contactModal) {
+      // Edit button handler using event delegation
+      contactModal.addEventListener('click', function(e) {
+        if (e.target && e.target.id === 'modal-edit-btn') {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('Edit button clicked, currentContactId:', currentContactId);
+          if (currentContactId) {
+            console.log('Navigating to edit page for contact:', currentContactId);
+            window.location.href = `/contacts/${currentContactId}/edit`;
+          } else {
+            console.error('No contact ID available for edit');
+            alert('Error: No contact selected');
+          }
+        }
+        
+        // Delete button handler using event delegation
+        if (e.target && e.target.id === 'modal-delete-btn') {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('Delete button clicked');
+          handleDeleteContact();
+        }
+      });
+    }
+    
+    // Also try direct selection as fallback
+    const modalEditBtn = document.getElementById('modal-edit-btn');
+    const modalDeleteBtn = document.getElementById('modal-delete-btn');
+    
+    if (modalEditBtn) {
+      console.log('Edit button found via direct selection');
+      modalEditBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Edit button clicked (direct), currentContactId:', currentContactId);
+        if (currentContactId) {
+          window.location.href = `/contacts/${currentContactId}/edit`;
+        } else {
+          alert('Error: No contact selected');
+        }
+      });
+    } else {
+      console.warn('Edit button not found via direct selection, using event delegation');
+    }
+    
+    if (modalDeleteBtn) {
+      console.log('Delete button found via direct selection');
+      modalDeleteBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Delete button clicked (direct)');
+        handleDeleteContact();
+      });
+    } else {
+      console.warn('Delete button not found via direct selection, using event delegation');
+    }
   }
 
   // Close modal on Escape key
@@ -138,11 +205,50 @@
 
   async function showContactDetails(contactId) {
     try {
+      currentContactId = contactId;
       const contact = await apiCall(`/contacts/${contactId}`);
       displayContactModal(contact);
     } catch (error) {
       alert('Error loading contact details: ' + error.message);
       console.error('Error loading contact:', error);
+    }
+  }
+
+  async function handleDeleteContact() {
+    console.log('handleDeleteContact called, currentContactId:', currentContactId);
+    
+    if (!currentContactId) {
+      console.error('No contact ID available for deletion');
+      alert('Error: No contact selected for deletion');
+      return;
+    }
+    
+    if (!confirm('Are you sure you want to delete this contact? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      console.log('Sending DELETE request for contact:', currentContactId);
+      const response = await fetch(`/contacts/${currentContactId}`, {
+        method: 'DELETE',
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
+      console.log('Delete response status:', response.status);
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error?.message || `Delete failed with status ${response.status}`);
+      }
+
+      // Close modal and reload contacts list
+      closeModal();
+      loadContacts();
+    } catch (error) {
+      alert('Error deleting contact: ' + error.message);
+      console.error('Error deleting contact:', error);
     }
   }
 
