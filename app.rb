@@ -172,26 +172,8 @@ end
 
 # Environment File Updater - Updates .env files with OAuth tokens
 class EnvFileUpdater
-  def self.find_env_file
-    # Try to find .env file (could be .env, .env-dev, .env-prod, etc.)
-    env_files = ['.env', '.env-dev', '.env-prod', ENV['ENV_FILE']].compact.uniq
-    
-    env_files.each do |file|
-      return file if File.exist?(file)
-    end
-    
-    # If no .env file exists, try to create one based on ENV variable
-    env_name = ENV['ENV'] || 'dev'
-    env_file = ".env-#{env_name}"
-    
-    # If that doesn't exist either, default to .env
-    env_file = '.env' unless File.exist?(env_file)
-    
-    env_file
-  end
-
   def self.update_tokens(access_token, refresh_token, logger = nil)
-    env_file = find_env_file
+    env_file = '.env'
     logger&.info "[EnvFileUpdater] Updating tokens in #{env_file}"
     
     unless File.exist?(env_file)
@@ -352,15 +334,38 @@ class ConstantContactAPI
     
     @logger.info "[ConstantContactAPI] Response Status: #{response.status}"
     @logger.info "[ConstantContactAPI] Response Headers: #{response.headers.inspect}"
-    @logger.info "[ConstantContactAPI] Response Body: #{response.body.inspect}"
+    # Handle nil or empty response bodies (common for 204 No Content)
+    if response.body.nil?
+      @logger.info "[ConstantContactAPI] Response Body: nil"
+    elsif response.body.is_a?(String) && response.body.empty?
+      @logger.info "[ConstantContactAPI] Response Body: (empty string)"
+    else
+      @logger.info "[ConstantContactAPI] Response Body: #{response.body.inspect}"
+    end
   end
 
   def handle_response(response)
     case response.status
     when 200..299
-      { success: true, data: response.body, status: response.status }
+      # For 204 No Content, body is typically nil or empty
+      data = (response.status == 204) ? nil : response.body
+      { success: true, data: data, status: response.status }
     when 400..499
-      { success: false, error: response.body, status: response.status }
+      # Handle case where error response body might not be valid JSON
+      error_data = response.body
+      if error_data.is_a?(Hash)
+        # Already parsed JSON
+        parsed_error = error_data
+      elsif error_data.is_a?(String) && !error_data.empty?
+        begin
+          parsed_error = JSON.parse(error_data)
+        rescue JSON::ParserError
+          parsed_error = { message: error_data }
+        end
+      else
+        parsed_error = { message: 'Client error' }
+      end
+      { success: false, error: parsed_error, status: response.status }
     when 500..599
       { success: false, error: { message: 'Constant Contact API server error' }, status: response.status }
     else
@@ -598,7 +603,13 @@ class ConstantContactApp < Sinatra::Base
     content_type :json
     
     request.body.rewind
-    body = JSON.parse(request.body.read) rescue {}
+    body_content = request.body.read
+    begin
+      body = body_content && !body_content.empty? ? JSON.parse(body_content) : {}
+    rescue JSON::ParserError => e
+      logger.error "[OAuth2] JSON parse error in refresh: #{e.message}"
+      body = {}
+    end
     refresh_token = body['refresh_token'] || ENV['CONSTANT_CONTACT_REFRESH_TOKEN']
     
     # Try stored tokens if no refresh token provided
@@ -684,7 +695,13 @@ class ConstantContactApp < Sinatra::Base
     content_type :json
     
     request.body.rewind
-    body = JSON.parse(request.body.read) rescue {}
+    body_content = request.body.read
+    begin
+      body = body_content && !body_content.empty? ? JSON.parse(body_content) : {}
+    rescue JSON::ParserError => e
+      logger.error "[OAuth2] JSON parse error in tokens: #{e.message}"
+      body = {}
+    end
     
     access_token = body['access_token']
     refresh_token = body['refresh_token']
@@ -838,6 +855,13 @@ class ConstantContactApp < Sinatra::Base
     send_file File.join(settings.public_folder, 'oauth', 'error.html')
   end
 
+  # Configuration endpoint - serves API_BASE_URL to frontend
+  get '/config.js' do
+    content_type 'application/javascript'
+    api_base_url = (ENV['API_BASE_URL'] || '').gsub("'", "\\'").gsub("\n", "\\n").gsub("\r", "\\r")
+    "window.API_BASE_URL = '#{api_base_url}';"
+  end
+
   # Health check
   get '/health' do
     json({ status: 'ok', service: 'constant-contact-api' })
@@ -904,39 +928,73 @@ class ConstantContactApp < Sinatra::Base
   # POST /contacts - Create a new contact
   post '/contacts' do
     request.body.rewind
-    contact_data = JSON.parse(request.body.read)
+    body_content = request.body.read
+    
+    if body_content.nil? || body_content.empty?
+      status 400
+      return json({ error: { message: 'Request body is required' } })
+    end
+    
+    begin
+      contact_data = JSON.parse(body_content)
+    rescue JSON::ParserError => e
+      logger.error "[Handler] JSON parse error: #{e.message}"
+      logger.error "[Handler] Body content: #{body_content[0..200]}"
+      status 400
+      return json({ error: { message: 'Invalid JSON', details: e.message } })
+    end
     
     result = @api.create_contact(contact_data)
     
     if result[:success]
       status result[:status]
-      json(result[:data])
+      json(result[:data] || {})
     else
       status result[:status]
-      json(result[:error])
+      error_data = result[:error] || { message: 'Failed to create contact' }
+      json(error_data.is_a?(Hash) ? error_data : { error: error_data })
     end
-  rescue JSON::ParserError => e
-    status 400
-    json({ error: { message: 'Invalid JSON', details: e.message } })
+  rescue => e
+    logger.error "[Handler] Error in POST /contacts: #{e.message}"
+    logger.error "[Handler] #{e.backtrace.join("\n")}"
+    status 500
+    json({ error: { message: 'Internal server error', details: e.message } })
   end
 
   # PUT /contacts/:id - Update a contact
   put '/contacts/:id' do
     request.body.rewind
-    contact_data = JSON.parse(request.body.read)
+    body_content = request.body.read
+    
+    if body_content.nil? || body_content.empty?
+      status 400
+      return json({ error: { message: 'Request body is required' } })
+    end
+    
+    begin
+      contact_data = JSON.parse(body_content)
+    rescue JSON::ParserError => e
+      logger.error "[Handler] JSON parse error: #{e.message}"
+      logger.error "[Handler] Body content: #{body_content[0..200]}"
+      status 400
+      return json({ error: { message: 'Invalid JSON', details: e.message } })
+    end
     
     result = @api.update_contact(params[:id], contact_data)
     
     if result[:success]
       status result[:status]
-      json(result[:data])
+      json(result[:data] || {})
     else
       status result[:status]
-      json(result[:error])
+      error_data = result[:error] || { message: 'Failed to update contact' }
+      json(error_data.is_a?(Hash) ? error_data : { error: error_data })
     end
-  rescue JSON::ParserError => e
-    status 400
-    json({ error: { message: 'Invalid JSON', details: e.message } })
+  rescue => e
+    logger.error "[Handler] Error in PUT /contacts/:id: #{e.message}"
+    logger.error "[Handler] #{e.backtrace.join("\n")}"
+    status 500
+    json({ error: { message: 'Internal server error', details: e.message } })
   end
 
   # DELETE /contacts/:id - Delete a contact
@@ -945,11 +1003,26 @@ class ConstantContactApp < Sinatra::Base
     
     if result[:success]
       status result[:status]
-      json({ message: 'Contact deleted successfully' })
+      # For 204 No Content, return empty body (no content-type or body)
+      if result[:status] == 204
+        status 204
+        body ''
+      else
+        content_type :json
+        json({ message: 'Contact deleted successfully' })
+      end
     else
       status result[:status]
-      json(result[:error])
+      content_type :json
+      error_data = result[:error] || { message: 'Failed to delete contact' }
+      json(error_data.is_a?(Hash) ? error_data : { error: error_data })
     end
+  rescue => e
+    logger.error "[Handler] Error in DELETE /contacts/:id: #{e.message}"
+    logger.error "[Handler] #{e.backtrace.join("\n")}"
+    status 500
+    content_type :json
+    json({ error: { message: 'Internal server error', details: e.message } })
   end
 
   # Error handling

@@ -15,8 +15,24 @@
   });
 })();
 
-// API base URL
-const API_BASE = '';
+// API base URL - auto-detect from current path or use environment variable
+// When deployed behind nginx at /constant_contact/, we need to use that prefix
+function detectApiBase() {
+  // First, check if explicitly set via window.API_BASE_URL
+  if (typeof window.API_BASE_URL === 'string' && window.API_BASE_URL.trim() !== '') {
+    const base = window.API_BASE_URL.trim();
+    // Ensure it ends with / unless it's root
+    return base === '/' ? '/' : (base.endsWith('/') ? base : base + '/');
+  }
+  
+  // Default to root for standalone deployment
+  return '/';
+}
+
+const API_BASE = detectApiBase();
+// Make it globally accessible for other scripts
+window.API_BASE = API_BASE;
+
 
 // Helper function to make API calls
 async function apiCall(endpoint, options = {}) {
@@ -27,14 +43,26 @@ async function apiCall(endpoint, options = {}) {
     },
   };
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...defaultOptions,
-    ...options,
-    headers: {
-      ...defaultOptions.headers,
-      ...options.headers,
-    },
-  });
+  // Normalize endpoint path - ensure proper joining
+  const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : '/' + endpoint;
+  // If API_BASE is not root, strip leading slash from endpoint to avoid double slashes
+  const url = API_BASE === '/' ? normalizedEndpoint : API_BASE + normalizedEndpoint.substring(1);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      ...defaultOptions,
+      ...options,
+      headers: {
+        ...defaultOptions.headers,
+        ...options.headers,
+      },
+    });
+  } catch (error) {
+    // Handle network errors (CORS, connection refused, etc.)
+    console.error('Network error fetching:', url, error);
+    throw new Error(`Network error: ${error.message}. Please check your connection and ensure the server is running.`);
+  }
 
   // Check if response is actually JSON before parsing
   const contentType = response.headers.get('content-type');

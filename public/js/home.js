@@ -16,7 +16,11 @@
     }
 
     try {
-      const response = await fetch('/oauth/refresh', {
+      // Use API_BASE from app.js (must be loaded before this script)
+      const apiBase = window.API_BASE || '/';
+      const url = apiBase === '/' ? '/oauth/refresh' : apiBase + '/oauth/refresh';
+      
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

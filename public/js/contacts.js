@@ -18,6 +18,20 @@
   document.addEventListener('DOMContentLoaded', function() {
     loadContacts();
     setupModalHandlers();
+    
+    // Intercept Home link clicks to ensure correct routing to /constant_contact/
+    // This fixes an issue where the Home link from the contacts page was routing to Phoenix instead of the Ruby app
+    const nav = document.querySelector('nav');
+    if (nav) {
+      nav.addEventListener('click', function(e) {
+        const link = e.target.closest('a');
+        if (link && link.textContent.trim() === 'Home') {
+          e.preventDefault();
+          e.stopPropagation();
+          window.location.href = '/';
+        }
+      }, true); // Use capture phase to intercept early
+    }
   });
 
   function setupModalHandlers() {
@@ -229,19 +243,9 @@
 
     try {
       console.log('Sending DELETE request for contact:', currentContactId);
-      const response = await fetch(`/contacts/${currentContactId}`, {
+      await apiCall(`/contacts/${currentContactId}`, {
         method: 'DELETE',
-        headers: {
-          'Accept': 'application/json',
-        },
       });
-
-      console.log('Delete response status:', response.status);
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error?.message || `Delete failed with status ${response.status}`);
-      }
 
       // Close modal and reload contacts list
       closeModal();
