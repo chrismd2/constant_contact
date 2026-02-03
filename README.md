@@ -403,10 +403,6 @@ cp example.env .env
   
 - **`CONSTANT_CONTACT_CLIENT_SECRET`** - OAuth2 Client Secret
   - Get this from: https://developer.constantcontact.com/
-  
-Both are required for OAuth2 authentication flow with automatic token refresh.
-
-### Optional:
 
 - **`CONSTANT_CONTACT_REDIRECT_URI`** - OAuth2 redirect URI (default: `http://localhost:4567/oauth/callback`)
   - For standalone: `http://localhost:4567/oauth/callback`
