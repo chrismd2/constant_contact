@@ -64,6 +64,11 @@ async function apiCall(endpoint, options = {}) {
     throw new Error(`Network error: ${error.message}. Please check your connection and ensure the server is running.`);
   }
 
+  // Handle 204 No Content responses (common for DELETE requests)
+  if (response.status === 204) {
+    return null; // Success with no content
+  }
+
   // Check if response is actually JSON before parsing
   const contentType = response.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {

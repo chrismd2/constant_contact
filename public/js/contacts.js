@@ -241,6 +241,15 @@
       return;
     }
 
+    // Disable delete button and show loading state
+    const deleteBtn = document.getElementById('modal-delete-btn');
+    const originalText = deleteBtn ? deleteBtn.textContent : 'Delete';
+    if (deleteBtn) {
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Deleting...';
+      deleteBtn.classList.add('opacity-50', 'cursor-not-allowed');
+    }
+
     try {
       console.log('Sending DELETE request for contact:', currentContactId);
       await apiCall(`/contacts/${currentContactId}`, {
@@ -249,11 +258,50 @@
 
       // Close modal and reload contacts list
       closeModal();
+      
+      // Show success feedback
+      showSuccessMessage('Contact deleted successfully');
+      
+      // Reload contacts list
       loadContacts();
     } catch (error) {
+      // Restore button state on error
+      if (deleteBtn) {
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = originalText;
+        deleteBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+      
       alert('Error deleting contact: ' + error.message);
       console.error('Error deleting contact:', error);
     }
+  }
+
+  function showSuccessMessage(message) {
+    // Create a temporary success message element
+    const successEl = document.createElement('div');
+    successEl.className = 'fixed top-4 right-4 z-50 rounded-md bg-green-50 dark:bg-green-900/20 p-4 shadow-lg border border-green-200 dark:border-green-800';
+    successEl.innerHTML = `
+      <div class="flex items-center">
+        <svg class="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+        </svg>
+        <p class="ml-3 text-sm font-medium text-green-800 dark:text-green-200">${escapeHtml(message)}</p>
+      </div>
+    `;
+    
+    document.body.appendChild(successEl);
+    
+    // Remove after 3 seconds
+    setTimeout(() => {
+      successEl.style.transition = 'opacity 0.3s';
+      successEl.style.opacity = '0';
+      setTimeout(() => {
+        if (successEl.parentNode) {
+          successEl.parentNode.removeChild(successEl);
+        }
+      }, 300);
+    }, 3000);
   }
 
   function displayContactModal(contact) {
